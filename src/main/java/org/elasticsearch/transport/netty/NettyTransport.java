@@ -49,6 +49,7 @@ import org.elasticsearch.common.util.concurrent.KeyedLock;
 import org.elasticsearch.monitor.jvm.JvmInfo;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.*;
+import org.elasticsearch.transport.netty.ssl.SSLSettings;
 import org.elasticsearch.transport.support.TransportStatus;
 import org.jboss.netty.bootstrap.ClientBootstrap;
 import org.jboss.netty.bootstrap.ServerBootstrap;
@@ -60,6 +61,7 @@ import org.jboss.netty.channel.socket.nio.NioServerSocketChannelFactory;
 import org.jboss.netty.channel.socket.nio.NioWorkerPool;
 import org.jboss.netty.channel.socket.oio.OioClientSocketChannelFactory;
 import org.jboss.netty.channel.socket.oio.OioServerSocketChannelFactory;
+import org.jboss.netty.handler.ssl.SslHandler;
 import org.jboss.netty.util.HashedWheelTimer;
 
 import java.io.IOException;
@@ -79,6 +81,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+
+import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLException;
 
 import static org.elasticsearch.common.network.NetworkService.TcpSettings.*;
 import static org.elasticsearch.common.transport.NetworkExceptionHelper.isCloseConnectionException;
@@ -161,6 +166,8 @@ public class NettyTransport extends AbstractLifecycleComponent<Transport> implem
     // connections while no connect operations is going on... (this might help with 100% CPU when stopping the transport?)
     private final ReadWriteLock globalLock = new ReentrantReadWriteLock();
 
+    private final SSLSettings sslSettings;
+
     @Inject
     public NettyTransport(Settings settings, ThreadPool threadPool, NetworkService networkService, Version version) {
         super(settings);
@@ -205,6 +212,8 @@ public class NettyTransport extends AbstractLifecycleComponent<Transport> implem
 
         this.maxCumulationBufferCapacity = componentSettings.getAsBytesSize("max_cumulation_buffer_capacity", null);
         this.maxCompositeBufferComponents = componentSettings.getAsInt("max_composite_buffer_components", -1);
+
+        this.sslSettings = new SSLSettings(settings);
 
         long defaultReceiverPredictor = 512 * 1024;
         if (JvmInfo.jvmInfo().mem().directMemoryMax().bytes() > 0) {
@@ -258,6 +267,13 @@ public class NettyTransport extends AbstractLifecycleComponent<Transport> implem
             @Override
             public ChannelPipeline getPipeline() throws Exception {
                 ChannelPipeline pipeline = Channels.pipeline();
+
+                if (sslSettings.isEnabled()) {
+                    SSLEngine engine = sslSettings.createContext().createSSLEngine();
+                    engine.setUseClientMode(true);
+                    pipeline.addLast("ssl", new SslHandler(engine));
+                }
+
                 SizeHeaderFrameDecoder sizeHeader = new SizeHeaderFrameDecoder();
                 if (maxCumulationBufferCapacity != null) {
                     if (maxCumulationBufferCapacity.bytes() > Integer.MAX_VALUE) {
@@ -313,6 +329,14 @@ public class NettyTransport extends AbstractLifecycleComponent<Transport> implem
             @Override
             public ChannelPipeline getPipeline() throws Exception {
                 ChannelPipeline pipeline = Channels.pipeline();
+
+                if (sslSettings.isEnabled()) {
+                    SSLEngine engine = sslSettings.createContext().createSSLEngine();
+                    engine.setUseClientMode(false);
+                    engine.setNeedClientAuth(true);
+                    pipeline.addLast("ssl", new SslHandler(engine));
+                }
+
                 pipeline.addLast("openChannels", serverOpenChannels);
                 SizeHeaderFrameDecoder sizeHeader = new SizeHeaderFrameDecoder();
                 if (maxCumulationBufferCapacity != null) {
@@ -510,6 +534,9 @@ public class NettyTransport extends AbstractLifecycleComponent<Transport> implem
             // close the channel as safe measure, which will cause a node to be disconnected if relevant
             ctx.getChannel().close();
             disconnectFromNodeChannel(ctx.getChannel(), e.getCause());
+        } else if (e.getCause() instanceof SSLException) {
+            logger.warn("SSL exception [{}] on transport layer [{}], closing connection", e.getCause().getMessage(), ctx.getChannel());
+            ctx.getChannel().close();
         } else {
             logger.warn("exception caught on transport layer [{}], closing connection", e.getCause(), ctx.getChannel());
             // close the channel, which will cause a node to be disconnected if relevant
