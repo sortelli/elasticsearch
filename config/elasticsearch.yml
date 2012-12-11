@@ -231,6 +231,15 @@
 #
 #http.enabled: false
 
+# Enable SSL for all internal node communication, as well as for the HTTP endpoint (disabled by default):
+#
+# network.ssl.enabled: true
+#
+# network.ssl.keystore.file: /path/to/keystore.ks
+# network.ssl.keystore.password: password
+# network.ssl.truststore.file: /path/to/truststore.ks
+# network.ssl.truststore.password: password
+
 
 ################################### Gateway ###################################
 

@@ -1,3 +1,24 @@
+h1. Custom SSL Fork of Elasticsearch
+
+Custom fork of Elasticsearch, adding support for SSL.
+
+When enabled, all node-to-node communication, as well as the HTTP
+endpoint are encrypted with TLS and require client certificate
+authentication.
+
+h2. How to enable SSL support
+
+By default SSL is disabled.  To enable SSL, add this to your elasticsearch.yml
+
+<pre>
+network.ssl.enabled: true
+network.ssl.keystore.file: /path/to/keystore.ks
+network.ssl.keystore.password: password
+network.ssl.truststore.file: /path/to/truststore.ks
+network.ssl.truststore.password: password
+</pre>
+
+
 h1. Elasticsearch
 
 h2. A Distributed RESTful Search Engine

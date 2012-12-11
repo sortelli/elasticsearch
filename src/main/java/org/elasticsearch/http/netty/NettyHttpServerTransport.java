@@ -39,6 +39,7 @@ import org.elasticsearch.http.*;
 import org.elasticsearch.http.HttpRequest;
 import org.elasticsearch.monitor.jvm.JvmInfo;
 import org.elasticsearch.transport.BindTransportException;
+import org.elasticsearch.transport.netty.ssl.SSLSettings;
 import org.jboss.netty.bootstrap.ServerBootstrap;
 import org.jboss.netty.channel.*;
 import org.jboss.netty.channel.socket.nio.NioServerSocketChannelFactory;
@@ -47,6 +48,7 @@ import org.jboss.netty.handler.codec.http.HttpChunkAggregator;
 import org.jboss.netty.handler.codec.http.HttpContentCompressor;
 import org.jboss.netty.handler.codec.http.HttpContentDecompressor;
 import org.jboss.netty.handler.codec.http.HttpRequestDecoder;
+import org.jboss.netty.handler.ssl.SslHandler;
 import org.jboss.netty.handler.timeout.ReadTimeoutException;
 
 import java.io.IOException;
@@ -54,6 +56,9 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
+
+import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLException;
 
 import static org.elasticsearch.common.network.NetworkService.TcpSettings.*;
 import static org.elasticsearch.common.util.concurrent.EsExecutors.daemonThreadFactory;
@@ -114,6 +119,8 @@ public class NettyHttpServerTransport extends AbstractLifecycleComponent<HttpSer
 
     private volatile HttpServerAdapter httpServerAdapter;
 
+    private final SSLSettings sslSettings;
+
     @Inject
     public NettyHttpServerTransport(Settings settings, NetworkService networkService, BigArrays bigArrays) {
         super(settings);
@@ -143,6 +150,8 @@ public class NettyHttpServerTransport extends AbstractLifecycleComponent<HttpSer
         this.reuseAddress = componentSettings.getAsBoolean("reuse_address", settings.getAsBoolean(TCP_REUSE_ADDRESS, NetworkUtils.defaultReuseAddress()));
         this.tcpSendBufferSize = componentSettings.getAsBytesSize("tcp_send_buffer_size", settings.getAsBytesSize(TCP_SEND_BUFFER_SIZE, TCP_DEFAULT_SEND_BUFFER_SIZE));
         this.tcpReceiveBufferSize = componentSettings.getAsBytesSize("tcp_receive_buffer_size", settings.getAsBytesSize(TCP_RECEIVE_BUFFER_SIZE, TCP_DEFAULT_RECEIVE_BUFFER_SIZE));
+
+        this.sslSettings = new SSLSettings(settings);
 
         long defaultReceiverPredictor = 512 * 1024;
         if (JvmInfo.jvmInfo().mem().directMemoryMax().bytes() > 0) {
@@ -315,6 +324,9 @@ public class NettyHttpServerTransport extends AbstractLifecycleComponent<HttpSer
             if (!NetworkExceptionHelper.isCloseConnectionException(e.getCause())) {
                 logger.warn("Caught exception while handling client http traffic, closing connection {}", e.getCause(), ctx.getChannel());
                 ctx.getChannel().close();
+            } else if (e.getCause() instanceof SSLException) {
+                logger.warn("SSL exception [{}] while handling client http trafficon, closing connection", e.getCause().getMessage());
+                ctx.getChannel().close();
             } else {
                 logger.debug("Caught exception while handling client http traffic, closing connection {}", e.getCause(), ctx.getChannel());
                 ctx.getChannel().close();
@@ -336,6 +348,14 @@ public class NettyHttpServerTransport extends AbstractLifecycleComponent<HttpSer
         @Override
         public ChannelPipeline getPipeline() throws Exception {
             ChannelPipeline pipeline = Channels.pipeline();
+
+            if (this.transport.sslSettings.isEnabled()) {
+                SSLEngine engine = this.transport.sslSettings.createContext().createSSLEngine();
+                engine.setUseClientMode(false);
+                engine.setNeedClientAuth(true);
+                pipeline.addLast("ssl", new SslHandler(engine));
+            }
+
             pipeline.addLast("openChannels", transport.serverOpenChannels);
             HttpRequestDecoder requestDecoder = new HttpRequestDecoder(
                     (int) transport.maxInitialLineLength.bytes(),
